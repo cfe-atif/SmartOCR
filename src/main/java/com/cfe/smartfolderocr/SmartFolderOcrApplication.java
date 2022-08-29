@@ -11,14 +11,13 @@
  */
 package com.cfe.smartfolderocr;
 
+import ch.qos.logback.classic.spi.Configurator;
 import com.cfe.smartfolderocr.cron.SmartFolderOCRCronJob;
-import org.apache.tika.exception.TikaException;
+import org.apache.logging.log4j.Level;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.web.servlet.support.SpringBootServletInitializer;
-
-import java.io.IOException;
 
 @SpringBootApplication
 public class SmartFolderOcrApplication extends SpringBootServletInitializer {
@@ -30,9 +29,8 @@ public class SmartFolderOcrApplication extends SpringBootServletInitializer {
         this.cronJob = cronJob;
     }
 
-    public static void main(String[] args) throws IOException, TikaException {
+    public static void main(String[] args) {
         SpringApplication.run(SmartFolderOcrApplication.class, args);
         cronJob.runCronJob();
     }
-
 }

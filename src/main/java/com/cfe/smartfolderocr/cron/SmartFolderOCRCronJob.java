@@ -30,9 +30,7 @@ import org.springframework.web.client.RestTemplate;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 
 @Component
 public class SmartFolderOCRCronJob {
@@ -49,26 +47,33 @@ public class SmartFolderOCRCronJob {
     @Value("${smart.folder.server.login:INT=1&}")
     private String STEP_1_LOGIN_URL;
 
-    @Value("${smart.folder.server.login.user.name:Name=sysadmin&}")
+    @Value("${smart.folder.server.login.user.name:Name=sysadmin}")
     private String loginName;
     @Value("${smart.folder.server.login.user.password:Password=password}")
     private String loginPassword;
 
     private Logger logger = LoggerFactory.getLogger(SmartFolderOCRCronJob.class);
-    private RestTemplate restTemplate;
+    //private RestTemplate restTemplate;
+
+    RestTemplateHelper restTemplateHelper;
 
     private User user;
     private String sessionId;
     private Tika tika;
+    private HashMap<String, Integer> failedDocumentsCounter;
+    private Gson gson;
 
     public SmartFolderOCRCronJob() {
-        restTemplate = new RestTemplate();
+        restTemplateHelper = new RestTemplateHelper();
+        tika = new Tika();
+        gson = new Gson();
+        failedDocumentsCounter = new HashMap<>();
     }
 
     // schedule this job to run after x minutes
     @Scheduled(fixedRateString = "${smart.folder.job.delay:300000}", initialDelayString = "${smart.folder.job.delay:300000}")
-   // @Scheduled(fixedDelay = 300000, initialDelay = 300000)
-    public void runCronJob() throws TikaException, IOException {
+    // @Scheduled(fixedDelay = 300000, initialDelay = 300000)
+    public void runCronJob() {
         if (!isUserDataInitialized())
             initializeSessionIdAfterSignin();
         lookForDocumentsAndProcessForOcr();
@@ -76,52 +81,22 @@ public class SmartFolderOCRCronJob {
 
     private void initializeSessionIdAfterSignin() {
         logger.info("Initializing session and sign in ");
-        HttpEntity<String> response = callUrlWithSession(SERVER_URL_JSON + STEP_1_LOGIN_URL + loginName + loginPassword, "", null);
+        HttpEntity<String> response = restTemplateHelper.callUrlWithSession(SERVER_URL_JSON + STEP_1_LOGIN_URL + loginName + '&' + loginPassword, "", null, null);
         String resultString = response.getBody();
         HttpHeaders headers = response.getHeaders();
-        logger.info("response " + resultString);
+        logger.info(" login response " + resultString);
 
         if (resultString.contains("Error")) {
             logger.error(USER_NOT_INITIALIZED);
             return;
         } else {
-            user = new Gson().fromJson(resultString, User.class);
-            logger.info("after gson conversion " + user.toString());
+            user = gson.fromJson(resultString, User.class);
+            logger.info("user after gson conversion " + user.toString());
             sessionId = Arrays.stream(headers.get("Set-Cookie").get(0).split(";")).filter(word -> word.contains("JSESSIONID=")).findFirst().get();
         }
     }
 
-    private HttpEntity<String> callUrlWithSession(String url, String sessionId, HttpHeaders headers) {
-        if (headers != null) {
-            headers.add("Cookie", sessionId);
-        }
-        HttpEntity entity = new HttpEntity(null, headers);
-        logger.info(url);
-        return restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
-    }
-
-    private HttpEntity<String> callUrlWithSessionAndUploadFile(String url, String sessionId, HttpHeaders headers, String fileText) {
-        if (headers != null) {
-            headers.add("Cookie", sessionId);
-            headers.setContentType(MediaType.TEXT_PLAIN);
-        }
-        HttpEntity entity = new HttpEntity(fileText, headers);
-        logger.info(url);
-        return restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
-    }
-
-    private ResponseEntity<byte[]> callUrlWithSessionAndDownloadFile(String url, String sessionId, HttpHeaders headers) {
-        if (headers != null) {
-            headers.add("Cookie", sessionId);
-            headers.setContentType(MediaType.TEXT_PLAIN);
-        }
-        headers.setAccept(Collections.singletonList(MediaType.APPLICATION_OCTET_STREAM));
-        HttpEntity entity = new HttpEntity(null, headers);
-        logger.info(url);
-        return restTemplate.exchange(url, HttpMethod.POST, entity, byte[].class);
-    }
-
-    public void lookForDocumentsAndProcessForOcr() throws IOException, TikaException {
+    public void lookForDocumentsAndProcessForOcr() {
         logger.info("look For Documents And Process For Ocr started");
 
         if (!isUserDataInitialized()) {
@@ -129,17 +104,23 @@ public class SmartFolderOCRCronJob {
             return;
         }
 
-        if(!CollectionUtils.isEmpty(user.databases)) {
-            logger.info("Processing multiple DBs");
+        if (!CollectionUtils.isEmpty(user.databases)) {
+            logger.info("Processing multiple DBs ");
             for (int i = 0; i < user.databases.size(); i++) {
-                processDatabaseForDocumentOcr(user.databases.get(i));
+                Database currentDatabase = user.databases.get(i);
+                try {
+                    processDatabaseForDocumentOcr(currentDatabase);
+                } catch (Exception e) {
+                    logger.error("Error processing DB: " + currentDatabase + " exception: " + e.getMessage());
+                }
             }
         }
 
         logger.info("lookForDocumentsAndProcessForOcr ended");
     }
 
-    private void processDatabaseForDocumentOcr(Database currentDatabase) throws IOException, TikaException {
+    private void processDatabaseForDocumentOcr(Database currentDatabase) {
+
         logger.debug("looking in database " + currentDatabase);
 
         String xDB = (CronHelper.createXML("Database", "" + currentDatabase.dbNo));
@@ -147,71 +128,107 @@ public class SmartFolderOCRCronJob {
 
         //call to get next doc to OCR
         String nextDocumentToOCRResponse = getNextDocumentToOCRResponse(xDB, sUser);
+        GetNextDocumentDTO nextDocumentDTO = new GetNextDocumentDTO(nextDocumentToOCRResponse);
 
         if (nextDocumentToOCRResponse.contains("session") || nextDocumentToOCRResponse.contains("Session")) {
             initializeSessionIdAfterSignin();
         }
 
-        GetNextDocumentDTO nextDocumentDTO = new GetNextDocumentDTO(nextDocumentToOCRResponse);
 
-        while ((nextDocumentDTO.docNo != null) && (!nextDocumentDTO.docNo.equals("null"))) {
-
-            String xDoc = (CronHelper.createXML("Document", "" + nextDocumentDTO.docNo));
-            String xPage = (CronHelper.createXML("Page", "" + nextDocumentDTO.pageNo));
-            logger.debug(nextDocumentDTO.toString());
-
-            //check for null
-            String extractedText = extractTextFromFileFromServer(xDB, sUser, xDoc, xPage);
-            if (extractedText != null) {
-                String docType = (CronHelper.createXML("DocType", "1"));
-                String sendPageTextMessage = CronHelper.createXML("m:CH_AddPageText", sUser + xDB + docType + xDoc + xPage);
-                HttpEntity<String> httpEntity = callUrlWithSessionAndUploadFile(getStringForSoapCallWithMessage(sendPageTextMessage), sessionId, new HttpHeaders(), extractedText);
-                //logger.info(httpEntity.getBody());
+        while (nextDocumentDTO != null && nextDocumentDTO.docNo != null && !nextDocumentDTO.docNo.equals("null")) {
+            if (isNextDocumentFailedEarlier(nextDocumentDTO.docNo, currentDatabase.dbNo)) {
+                logger.error("Skipping this doc and db as already tried and failed. "+ nextDocumentDTO.docNo + " for db "+ currentDatabase.dbNo);
+                return;
             }
+            else {
+                String docNo = nextDocumentDTO.docNo;
 
-            //call to get next doc to OCR
-            nextDocumentToOCRResponse = getNextDocumentToOCRResponse(xDB, sUser);
+                updateDocCounterAsProcessed(currentDatabase, docNo);
 
-            nextDocumentDTO = new GetNextDocumentDTO(nextDocumentToOCRResponse);
+                String xDoc = (CronHelper.createXML("Document", "" + docNo));
+                String xPage = (CronHelper.createXML("Page", "" + nextDocumentDTO.pageNo));
+
+                logger.debug(nextDocumentDTO.toString());
+
+                //check for null
+                String extractedText = extractTextFromFileFromServer(xDB, sUser, xDoc, xPage);
+                if (extractedText != null) {
+                    String docType = (CronHelper.createXML("DocType", "1"));
+                    String sendPageTextMessage = CronHelper.createXML("m:CH_AddPageText", sUser + xDB + docType + xDoc + xPage);
+                    HttpEntity<String> httpEntity = restTemplateHelper.callUrlWithSession(CronHelper.getStringForSoapCallWithMessage(sendPageTextMessage, SERVER_URL), sessionId, new HttpHeaders(), extractedText);
+                    //logger.info(httpEntity.getBody());
+                    if(httpEntity == null)
+                    {
+                        logger.error("Empty response from server for AddPageText call with  "+ xDB + sUser + xDoc + xPage);
+                    }
+                }
+
+                //call to get next doc to OCR
+                nextDocumentToOCRResponse = getNextDocumentToOCRResponse(xDB, sUser);
+                nextDocumentDTO = new GetNextDocumentDTO(nextDocumentToOCRResponse);
+            }
         }
+    }
+
+    private void updateDocCounterAsProcessed(Database currentDatabase, String docNo) {
+        String keyForDocument = getKeyForDocument(docNo, currentDatabase.dbNo);
+        Integer docCounter = failedDocumentsCounter.get(keyForDocument);
+        if (docCounter != null)
+            docCounter++;
+        else docCounter = 1;
+        failedDocumentsCounter.put(keyForDocument, docCounter);
+    }
+
+    private String getKeyForDocument(String docNo, String dbNo) {
+        return dbNo + "-" + docNo;
+    }
+
+    private boolean isNextDocumentFailedEarlier(String docNo, String dbNo) {
+        Integer docFailCounter = failedDocumentsCounter.get(getKeyForDocument(docNo, dbNo));
+        return docFailCounter != null && docFailCounter > 1;
     }
 
     private boolean isUserDataInitialized() {
-        logger.info("isUserDataInitialized user: " + user + " sessionId: "+sessionId);
-        return user != null && !CollectionUtils.isEmpty(user.databases) && !StringUtils.isBlank(sessionId);
+        logger.info("isUserDataInitialized user: " + user + " sessionId: " + sessionId);
+        return user != null && user.isUserDataInitialized() && !StringUtils.isBlank(sessionId);
     }
 
-    private String extractTextFromFileFromServer(String xDB, String sUser, String xDoc, String xPage) throws IOException, TikaException {
-        String sMessage = "<m:ReadImageOCR>" + sUser + xDB + xDoc + xPage + "<OCR>true</OCR><AsStream>true</AsStream></m:ReadImageOCR>";
-        ResponseEntity<byte[]> byteHttpEntity = callUrlWithSessionAndDownloadFile(getStringForSoapCallWithMessage(sMessage), sessionId, new HttpHeaders());
-        byte body1[] = byteHttpEntity.getBody();
-        HttpHeaders headers = byteHttpEntity.getHeaders();
-        List<String> downloadedFileName = headers.get("Content-Disposition");
-        logger.info("downloaded filename: "+downloadedFileName.get(0));
-        if (body1 == null) {
-            return null;
-        }
-        InputStream myInputStream = new ByteArrayInputStream(body1);
+    private String extractTextFromFileFromServer(String xDB, String sUser, String xDoc, String xPage) {
+        String parsedText = null;
 
-        if (tika == null)
-            tika = new Tika();
-        return tika.parseToString(myInputStream);
+        String sMessage = "<m:ReadImageOCR>" + sUser + xDB + xDoc + xPage + "<OCR>true</OCR><AsStream>true</AsStream></m:ReadImageOCR>";
+        ResponseEntity<byte[]> byteHttpEntity = restTemplateHelper.callUrlWithSessionAndDownloadFile(CronHelper.getStringForSoapCallWithMessage(sMessage, SERVER_URL), sessionId, new HttpHeaders());
+
+        if (byteHttpEntity != null) {
+            byte body[] = byteHttpEntity.getBody();
+            HttpHeaders headers = byteHttpEntity.getHeaders();
+            List<String> downloadedFileName = headers.get("Content-Disposition");
+            logger.info("downloaded filename: " + downloadedFileName.get(0));
+            if (body != null) {
+                InputStream myInputStream = new ByteArrayInputStream(body);
+                try {
+                    parsedText = tika.parseToString(myInputStream);
+                } catch (IOException e) {
+                    logger.error("I/O Error in extractTextFromFileFromServer: message = " + e.getMessage());
+                } catch (TikaException e) {
+                    logger.error("Library Error in extractTextFromFileFromServer: message = " + e.getMessage());
+                } catch (Exception e) {
+                    logger.error("Library Error in extractTextFromFileFromServer: message = " + e.getMessage());
+                }
+            }
+        }
+
+        return parsedText;
     }
 
     private String getNextDocumentToOCRResponse(String xDB, String sUser) {
-        String nextDocMessage = (CronHelper.createXML("m:CH_GetNextDocToOCR", xDB + sUser));
-        HttpEntity<String> response = callUrlWithSession(getStringForSoapCallWithMessage(nextDocMessage), sessionId, new HttpHeaders());
-        String body = response.getBody();
+
+        String body = null;
+        HttpEntity<String> response = restTemplateHelper.callUrlWithSession(CronHelper.getStringForSoapCallWithMessage(CronHelper.createXML("m:CH_GetNextDocToOCR", xDB + sUser), SERVER_URL), sessionId, new HttpHeaders(), null);
+        if (response != null) {
+            body = response.getBody();
+        }
         logger.debug("Get Next Doc response: " + body);
         return body;
-    }
-
-    private String getStringForSoapCallWithMessage(String message) {
-        StringBuffer sb = new StringBuffer();
-        sb.append("?Soap_Message=\"");
-        sb.append(message);
-        sb.append("\"");
-        String sendString = SERVER_URL + "/servlets/servlets.CH_CherryServlet" + sb;
-        return sendString;
     }
 }

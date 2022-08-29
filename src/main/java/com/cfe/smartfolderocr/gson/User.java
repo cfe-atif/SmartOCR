@@ -12,6 +12,8 @@
 package com.cfe.smartfolderocr.gson;
 
 import com.google.gson.annotations.SerializedName;
+import org.apache.tika.utils.StringUtils;
+import org.springframework.util.CollectionUtils;
 
 import java.util.List;
 
@@ -27,6 +29,10 @@ public class User {
                 "userData=" + userData +
                 ", database=" + databases +
                 '}';
+    }
+
+    public boolean isUserDataInitialized() {
+        return !CollectionUtils.isEmpty(databases);
     }
 }
 

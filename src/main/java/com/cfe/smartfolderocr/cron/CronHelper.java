@@ -35,4 +35,13 @@ public class CronHelper {
         }
         return null;
     }
+
+    public static String getStringForSoapCallWithMessage(String message, String serverUrl) {
+        StringBuffer sb = new StringBuffer();
+        sb.append("?Soap_Message=\"");
+        sb.append(message);
+        sb.append("\"");
+        String sendString = serverUrl + "/servlets/servlets.CH_CherryServlet" + sb;
+        return sendString;
+    }
 }
