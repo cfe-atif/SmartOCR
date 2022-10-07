@@ -21,16 +21,19 @@ import org.apache.tika.utils.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.util.CollectionUtils;
-import org.springframework.web.client.RestTemplate;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
 
 @Component
 public class SmartFolderOCRCronJob {
@@ -51,6 +54,9 @@ public class SmartFolderOCRCronJob {
     private String loginName;
     @Value("${smart.folder.server.login.user.password:Password=password}")
     private String loginPassword;
+
+    @Value("${smart.folder.ocr.bad.queue.min.fail.counter:2}")
+    private int minimumFailCounter;
 
     private Logger logger = LoggerFactory.getLogger(SmartFolderOCRCronJob.class);
     //private RestTemplate restTemplate;
@@ -137,10 +143,15 @@ public class SmartFolderOCRCronJob {
 
         while (nextDocumentDTO != null && nextDocumentDTO.docNo != null && !nextDocumentDTO.docNo.equals("null")) {
             if (isNextDocumentFailedEarlier(nextDocumentDTO.docNo, currentDatabase.dbNo)) {
-                logger.error("Skipping this doc and db as already tried and failed. "+ nextDocumentDTO.docNo + " for db "+ currentDatabase.dbNo);
-                return;
-            }
-            else {
+
+                if (isNextDocumentFailedEarlierRepeatedly(nextDocumentDTO.docNo, currentDatabase.dbNo)) {
+                    logger.error("Skipping this doc and db as already tried and failed. " + nextDocumentDTO.docNo + " for db " + currentDatabase.dbNo);
+                    return;
+                } else {
+                    moveThisDocumentToBadQueue(xDB, sUser, nextDocumentDTO);
+                }
+
+            } else {
                 String docNo = nextDocumentDTO.docNo;
 
                 updateDocCounterAsProcessed(currentDatabase, docNo);
@@ -170,6 +181,21 @@ public class SmartFolderOCRCronJob {
         }
     }
 
+    private void moveThisDocumentToBadQueue(String xDB, String sUser, GetNextDocumentDTO nextDocumentDTO) {
+        String xStartDoc = CronHelper.createXML("StartDoc", "" + nextDocumentDTO.docNo);
+        String xEndDoc = CronHelper.createXML("EndDoc", "0");
+        String xBadOcr = CronHelper.createXML("BadOCR", "true");
+        String xRebuild = CronHelper.createXML("Rebuild", "false");
+        String xDateFrom = CronHelper.createXML("DateFrom", "none");
+        String addDocToQueue = CronHelper.createXML("m:AddDocToQueue", sUser + xDB + xStartDoc + xEndDoc + xBadOcr + xRebuild + xDateFrom);
+        //"<m:AddDocToQueue><User>10</User><Database>1</Database><All>false</All><StartDoc>216</StartDoc><BadOCR>true</BadOCR><EndDoc>0</EndDoc><Rebuild>false</Rebuild><DateFrom>none</DateFrom></m:AddDocToQueue>"
+        HttpEntity<String> httpEntity = restTemplateHelper.callUrlWithSession(CronHelper.getStringForSoapCallWithMessage(addDocToQueue, SERVER_URL), sessionId, new HttpHeaders(), null);
+        if (httpEntity == null) {
+            logger.error("Empty response from server for AddDocToQueue call with  " + addDocToQueue);
+        }
+        logger.info(" AddDocToQueue response with url  " + httpEntity.getBody());
+    }
+
     private void updateDocCounterAsProcessed(Database currentDatabase, String docNo) {
         String keyForDocument = getKeyForDocument(docNo, currentDatabase.dbNo);
         Integer docCounter = failedDocumentsCounter.get(keyForDocument);
@@ -185,7 +211,14 @@ public class SmartFolderOCRCronJob {
 
     private boolean isNextDocumentFailedEarlier(String docNo, String dbNo) {
         Integer docFailCounter = failedDocumentsCounter.get(getKeyForDocument(docNo, dbNo));
+        logger.info("isNextDocumentFailedEarlier counter="+docFailCounter);
         return docFailCounter != null && docFailCounter > 1;
+    }
+
+    private boolean isNextDocumentFailedEarlierRepeatedly(String docNo, String dbNo) {
+        Integer docFailCounter = failedDocumentsCounter.get(getKeyForDocument(docNo, dbNo));
+        logger.info("isNextDocumentFailedEarlierRepeatedly counter="+docFailCounter);
+        return docFailCounter != null && docFailCounter > minimumFailCounter;
     }
 
     private boolean isUserDataInitialized() {
@@ -205,15 +238,15 @@ public class SmartFolderOCRCronJob {
             List<String> downloadedFileName = headers.get("Content-Disposition");
             logger.info("downloaded filename: " + downloadedFileName.get(0));
             if (body != null) {
-                InputStream myInputStream = new ByteArrayInputStream(body);
                 try {
+                    InputStream myInputStream = new ByteArrayInputStream(body);
                     parsedText = tika.parseToString(myInputStream);
                 } catch (IOException e) {
                     logger.error("I/O Error in extractTextFromFileFromServer: message = " + e.getMessage());
                 } catch (TikaException e) {
-                    logger.error("Library Error in extractTextFromFileFromServer: message = " + e.getMessage());
+                    logger.error("TikaException Error in extractTextFromFileFromServer: message = " + e.getMessage());
                 } catch (Exception e) {
-                    logger.error("Library Error in extractTextFromFileFromServer: message = " + e.getMessage());
+                    logger.error("Error in extractTextFromFileFromServer: message = " + e.getMessage());
                 }
             }
         }
