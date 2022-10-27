@@ -13,7 +13,7 @@
     <version>1.0.0-SNAPSHOT</version>
     <name>SmartFolderOCR</name>
     <description>Smart Folders OCR Engine</description>
-    <packaging>war</packaging>
+    <packaging>jar</packaging>
 
     <dependencies>
         <dependency>
