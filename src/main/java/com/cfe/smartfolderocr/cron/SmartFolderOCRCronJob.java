@@ -31,6 +31,8 @@ import org.springframework.util.CollectionUtils;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
+import java.net.URLEncoder;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -87,7 +89,7 @@ public class SmartFolderOCRCronJob {
 
     private void initializeSessionIdAfterSignin() {
         logger.info("Initializing session and sign in ");
-        HttpEntity<String> response = restTemplateHelper.callUrlWithSession(SERVER_URL_JSON + STEP_1_LOGIN_URL + loginName + '&' + loginPassword, "", null, null);
+        HttpEntity<String> response = restTemplateHelper.callUrlWithSession(SERVER_URL_JSON + STEP_1_LOGIN_URL + loginName + '&' + loginPassword, "", null, null, null);
         String resultString = response.getBody();
         HttpHeaders headers = response.getHeaders();
         logger.info(" login response " + resultString);
@@ -125,7 +127,7 @@ public class SmartFolderOCRCronJob {
         logger.info("lookForDocumentsAndProcessForOcr ended");
     }
 
-    private void processDatabaseForDocumentOcr(Database currentDatabase) {
+    private void processDatabaseForDocumentOcr(Database currentDatabase) throws UnsupportedEncodingException {
 
         logger.debug("looking in database " + currentDatabase);
 
@@ -149,6 +151,7 @@ public class SmartFolderOCRCronJob {
                     return;
                 } else {
                     moveThisDocumentToBadQueue(xDB, sUser, nextDocumentDTO);
+                    updateDocCounterAsProcessed(currentDatabase, nextDocumentDTO.docNo);
                 }
 
             } else {
@@ -162,11 +165,13 @@ public class SmartFolderOCRCronJob {
                 logger.debug(nextDocumentDTO.toString());
 
                 //check for null
-                String extractedText = extractTextFromFileFromServer(xDB, sUser, xDoc, xPage);
+                String rawText = extractTextFromFileFromServer(xDB, sUser, xDoc, xPage);
+                String extractedText = URLEncoder.encode(rawText, "UTF-8");
+
                 if (extractedText != null) {
                     String docType = (CronHelper.createXML("DocType", "1"));
                     String sendPageTextMessage = CronHelper.createXML("m:CH_AddPageText", sUser + xDB + docType + xDoc + xPage);
-                    HttpEntity<String> httpEntity = restTemplateHelper.callUrlWithSession(CronHelper.getStringForSoapCallWithMessage(sendPageTextMessage, SERVER_URL), sessionId, new HttpHeaders(), extractedText);
+                    HttpEntity<String> httpEntity = restTemplateHelper.callUrlWithSession(CronHelper.getStringForSoapCallWithMessage(sendPageTextMessage, SERVER_URL), sessionId, new HttpHeaders(), extractedText, xDoc);
                     //logger.info(httpEntity.getBody());
                     if(httpEntity == null)
                     {
@@ -189,7 +194,7 @@ public class SmartFolderOCRCronJob {
         String xDateFrom = CronHelper.createXML("DateFrom", "none");
         String addDocToQueue = CronHelper.createXML("m:AddDocToQueue", sUser + xDB + xStartDoc + xEndDoc + xBadOcr + xRebuild + xDateFrom);
         //"<m:AddDocToQueue><User>10</User><Database>1</Database><All>false</All><StartDoc>216</StartDoc><BadOCR>true</BadOCR><EndDoc>0</EndDoc><Rebuild>false</Rebuild><DateFrom>none</DateFrom></m:AddDocToQueue>"
-        HttpEntity<String> httpEntity = restTemplateHelper.callUrlWithSession(CronHelper.getStringForSoapCallWithMessage(addDocToQueue, SERVER_URL), sessionId, new HttpHeaders(), null);
+        HttpEntity<String> httpEntity = restTemplateHelper.callUrlWithSession(CronHelper.getStringForSoapCallWithMessage(addDocToQueue, SERVER_URL), sessionId, new HttpHeaders(), null, nextDocumentDTO.docNo);
         if (httpEntity == null) {
             logger.error("Empty response from server for AddDocToQueue call with  " + addDocToQueue);
         }
@@ -242,11 +247,11 @@ public class SmartFolderOCRCronJob {
                     InputStream myInputStream = new ByteArrayInputStream(body);
                     parsedText = tika.parseToString(myInputStream);
                 } catch (IOException e) {
-                    logger.error("I/O Error in extractTextFromFileFromServer: message = " + e.getMessage());
+                    logger.error("I/O Error in extractTextFromFileFromServer: message = " + e.getMessage(), e);
                 } catch (TikaException e) {
-                    logger.error("TikaException Error in extractTextFromFileFromServer: message = " + e.getMessage());
+                    logger.error("TikaException Error in extractTextFromFileFromServer: message = " + e.getMessage(), e);
                 } catch (Exception e) {
-                    logger.error("Error in extractTextFromFileFromServer: message = " + e.getMessage());
+                    logger.error("Error in extractTextFromFileFromServer: message = " + e.getMessage(), e);
                 }
             }
         }
@@ -257,7 +262,7 @@ public class SmartFolderOCRCronJob {
     private String getNextDocumentToOCRResponse(String xDB, String sUser) {
 
         String body = null;
-        HttpEntity<String> response = restTemplateHelper.callUrlWithSession(CronHelper.getStringForSoapCallWithMessage(CronHelper.createXML("m:CH_GetNextDocToOCR", xDB + sUser), SERVER_URL), sessionId, new HttpHeaders(), null);
+        HttpEntity<String> response = restTemplateHelper.callUrlWithSession(CronHelper.getStringForSoapCallWithMessage(CronHelper.createXML("m:CH_GetNextDocToOCR", xDB + sUser), SERVER_URL), sessionId, new HttpHeaders(), null, null);
         if (response != null) {
             body = response.getBody();
         }

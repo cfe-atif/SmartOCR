@@ -20,16 +20,20 @@ public class RestTemplateHelper {
         restTemplate = new RestTemplate();
     }
 
-    public HttpEntity<String> callUrlWithSession(String url, String sessionId, HttpHeaders headers, String fileText) {
+    public HttpEntity<String> callUrlWithSession(String url, String sessionId, HttpHeaders headers, String fileText, String xDoc) {
         logger.info(url);
         ResponseEntity<String> response = null;
-        try{
+        try {
             response = restTemplate.exchange(url, HttpMethod.POST, prepareEntity(sessionId, headers, fileText, true, false), String.class);
+            if(response.getStatusCode().value() != 200) {
+                logger.error("Unable to process document number {} in SmartFolders", xDoc);
+            }
         }
         catch (Exception e)
         {
-            logger.error("Error in callUrlWithSession: message = "+ e.getMessage());
+            logger.error("Error in callUrlWithSession: message = {}", e.getMessage(), e);
         }
+        logger.debug("response: " + response.getBody());
         return response;
     }
 
