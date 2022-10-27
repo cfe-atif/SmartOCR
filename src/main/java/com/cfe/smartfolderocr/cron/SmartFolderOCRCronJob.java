@@ -150,8 +150,8 @@ public class SmartFolderOCRCronJob {
                     logger.error("Skipping this doc and db as already tried and failed. " + nextDocumentDTO.docNo + " for db " + currentDatabase.dbNo);
                     return;
                 } else {
+                	logger.error("Removing document from OCR queue");
                     moveThisDocumentToBadQueue(xDB, sUser, nextDocumentDTO);
-                    updateDocCounterAsProcessed(currentDatabase, nextDocumentDTO.docNo);
                 }
 
             } else {
@@ -178,11 +178,10 @@ public class SmartFolderOCRCronJob {
                         logger.error("Empty response from server for AddPageText call with  "+ xDB + sUser + xDoc + xPage);
                     }
                 }
-
-                //call to get next doc to OCR
-                nextDocumentToOCRResponse = getNextDocumentToOCRResponse(xDB, sUser);
-                nextDocumentDTO = new GetNextDocumentDTO(nextDocumentToOCRResponse);
             }
+            //call to get next doc to OCR
+            nextDocumentToOCRResponse = getNextDocumentToOCRResponse(xDB, sUser);
+            nextDocumentDTO = new GetNextDocumentDTO(nextDocumentToOCRResponse);            
         }
     }
 
